@@ -1,0 +1,87 @@
+#!/bin/bash
+
+if [ $# -eq 0 ]; then
+  >&2 echo 'Please pass at least one symbol. Separate symbols with spaces.'
+  exit 0
+fi
+
+yhooFinArgs=""
+
+for i in $@
+do
+  if [ "$yhooFinArgs" = "" ]; then
+    yhooFinArgs=$i
+  else
+    yhooFinArgs=$yhooFinArgs","$i
+  fi
+done
+
+while true; do
+
+  raw_json=$(curl https://query1.finance.yahoo.com/v7/finance/quote?symbols=$yhooFinArgs 2>/dev/null)
+  qrr_json=$(echo $raw_json | jq -r .quoteResponse.result)
+  json_len=$(echo $qrr_json | jq length)
+  ny_time=$(TZ=America/New_York date +%H%M)
+
+  if [ $ny_time -gt 0929 ] && [ $ny_time -lt 1600 ]; then
+    market_change=$(\
+      echo $qrr_json |\
+      jq -r '
+        .[].symbol,
+        .[].regularMarketPrice,
+        (.[].regularMarketChange|.*100|round|./100),
+        (.[].regularMarketChangePercent|.*100|round|./100)')
+  elif [ $(echo $raw_json | jq -r .quoteResponse.result[].postMarketChange | grep -v null | wc -l) = $json_len ]; then
+    market_change=$(\
+      echo $qrr_json |\
+      jq -r '
+        .[].symbol,
+        .[].postMarketPrice,
+        (.[].postMarketChange|.*100|round|./100),
+        (.[].postMarketChangePercent|.*100|round|./100)')
+  elif [ $(echo $raw_json | jq -r .quoteResponse.result[].preMarketChange | grep -v null | wc -l) = $json_len ]; then
+    market_change=$(\
+      echo $qrr_json |\
+      jq -r '
+        .[].symbol,
+        .[].preMarketPrice,
+        (.[].preMarketChange|.*100|round|./100),
+        (.[].preMarketChangePercent|.*100|round|./100)')
+  else
+    echo 'Try removing some symbols; at least one is missing data.' && exit 0
+  fi
+
+  out=$(echo $market_change |\
+    xargs -n$json_len |\
+      awk '
+      {
+        for (i=1; i<=NF; i++)  {
+          a[NR,i] = $i
+        }
+      }
+      NF>p { p = NF }
+      END {
+        for(j=1; j<=p; j++) {
+          str=a[1,j]
+          for(i=2; i<=NR; i++){
+            str=str" "a[i,j];
+          }
+          print str
+        }
+      }' |\
+      xargs echo -e "$(sed -e 's/ -/ \\\e[31m-/' -e 's/\([^A-Z]\) \([0-9]\)/\1 \\\e[32m\2/' -e 's/$/%\\\e[0m/')" |\
+      column -tR 2,3,4)
+
+  echo -e "\n-------------------------------------------------------"
+  echo "Price, Price Change and Percent Change for each symbol."
+  echo "Press q to quit."
+  echo -e "-------------------------------------------------------\n"
+  printf '%s\n\n%s\n\033[%sA\r' "$out" "-------------------------------------------------------" $(($json_len+8))
+  sleep 0.5
+
+  read -t 0.25 -N 1 input
+  if [[ $input = "q" ]] || [[ $input = "Q" ]]; then
+    printf '\033[%sB\n' $(($json_len+8))
+    break
+  fi
+done
